@@ -1,0 +1,39 @@
+name: Ventor bounded stress gate
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic-stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VENTOR_STRESS_ITERATIONS: '50000'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - name: Compile
+        run: python -m compileall -q backend Ventor_2_9 tests
+      - name: Deterministic stress suite
+        run: python backend/stress_tests.py
+      - name: High-cardinality limiter stress
+        run: |
+          python - <<'PY'
+          from backend.production_runtime import RateLimiter
+          limiter = RateLimiter(limit=2, window=60, max_keys=1024)
+          for i in range(100000):
+              limiter.allow(f'client-{i}')
+          assert limiter.snapshot()['keys'] <= 1024
+          print(limiter.snapshot())
+          PY
