@@ -1,0 +1,14 @@
+# Ventor public repository ownership
+# Security-sensitive components require direct owner review.
+
+* @Scroller251-cloud
+
+/backend/security/ @Scroller251-cloud
+/backend/auth/ @Scroller251-cloud
+/backend/agents/ @Scroller251-cloud
+/backend/learning/ @Scroller251-cloud
+/backend/memory/ @Scroller251-cloud
+/.github/ @Scroller251-cloud
+/Dockerfile @Scroller251-cloud
+/docker-compose.yml @Scroller251-cloud
+/requirements.txt @Scroller251-cloud
