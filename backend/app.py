@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -67,7 +68,8 @@ def health():
 
 @app.get("/ready")
 async def ready():
-    return await readiness(providers)
+    result = await readiness(providers)
+    return JSONResponse(result, status_code=200 if result["ready"] else 503)
 
 
 @app.get("/metrics")
