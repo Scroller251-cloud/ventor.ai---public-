@@ -20,6 +20,7 @@ from learning_engine import VerifiedLearningEngine
 from learning_loop import LearningLoop
 from local_models import GemmaMentor, QwenMentor
 from mentor_learning import MentorLearningPipeline
+from memory_store import MemoryStore
 from owner_gate import require_owner
 from production_runtime import audit_event, install_production, metrics, readiness, runtime_snapshot
 from provider_router import ProviderRouter
@@ -31,6 +32,7 @@ APP_VERSION = "3.0.1"
 
 qwen = QwenMentor()
 gemma = GemmaMentor()
+memory = MemoryStore()
 learning = VerifiedLearningEngine()
 debate = DebateEngine(qwen, gemma, learning=learning)
 verifier = CriticVerifier([qwen, gemma])
@@ -65,8 +67,7 @@ def health():
 
 @app.get("/ready")
 async def ready():
-    result = await readiness(providers)
-    return result
+    return await readiness(providers)
 
 
 @app.get("/metrics")
@@ -95,12 +96,10 @@ async def route(t: Task):
 @app.post("/api/verify", dependencies=[Depends(require_owner)])
 async def verify(t: Task):
     results = await router.run(t.prompt, t.agents or router.select_specialists(t.prompt))
-
     class Candidate:
         def __init__(self, mentor, answer):
             self.mentor = mentor
             self.answer = answer
-
     candidates = [Candidate(r.agent, r.answer) for r in results if r.answer]
     verdict = await verifier.verify(t.prompt, candidates[:4])
     evidence = [{"agent": r.agent, "check": (await check_urls(r.answer)).__dict__} for r in results if r.answer]
@@ -181,7 +180,7 @@ def propose_upgrade(p: UpgradeProposal):
 
 
 from v3_routes import install_v3
-install_v3(app, memory=None, learning=learning, providers=providers)
+install_v3(app, memory=memory, learning=learning, providers=providers)
 
 _FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 if _FRONTEND.exists():
