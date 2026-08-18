@@ -19,7 +19,7 @@ class FinalVerdict:
     evidence: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 _STOPWORDS={"a","an","and","are","as","at","be","by","for","from","in","is","it","of","on","or","that","the","their","this","to","use","with","you","your","before","after","than","then","when","while"}
-_SYNONYMS={"check":"validate","checking":"validate","checked":"validate","verifies":"validate","verify":"validate","verified":"validate","validating":"validate","validation":"validate","doing":"perform","performed":"perform","expensive":"costly"}
+_SYNONYMS={"check":"validate","checking":"validate","checked":"validate","checks":"validate","verifies":"validate","verify":"validate","verified":"validate","validating":"validate","validation":"validate","doing":"perform","performed":"perform","improves":"improve","improved":"improve","improving":"improve","expensive":"costly"}
 _NEGATION={"not","never","no","without","avoid","cannot","can't","dont","don't"}
 
 def _tokens(text:str)->set[str]:
