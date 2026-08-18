@@ -4,6 +4,7 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,9 +32,17 @@ class DockerIsolationProvider:
     def __init__(self, image=None):
         self.host = platform.system().lower()
         self.image = image or (self.WINDOWS_IMAGE if self.host == "windows" else self.LINUX_IMAGE)
+        self._availability_ttl = 5.0
+        self._availability_at = 0.0
+        self._available = False
 
-    def available(self) -> bool:
-        return shutil.which("docker") is not None and self._docker_responds()
+    def available(self, force: bool = False) -> bool:
+        now = time.monotonic()
+        if not force and now - self._availability_at < self._availability_ttl:
+            return self._available
+        self._available = shutil.which("docker") is not None and self._docker_responds()
+        self._availability_at = now
+        return self._available
 
     def _docker_responds(self) -> bool:
         try:
@@ -55,8 +64,7 @@ class DockerIsolationProvider:
         if not self.available():
             raise IsolationUnavailable("Docker isolation is unavailable; refusing to execute untrusted code")
         with tempfile.TemporaryDirectory(prefix="ventor-isolated-") as td:
-            host = Path(td)
-            script = host / "main.py"
+            script = Path(td) / "main.py"
             script.write_text(source, encoding="utf-8")
             name = "ventor-sbx-" + uuid.uuid4().hex[:16]
             env = None if self.host == "windows" else {"PATH": "/usr/local/bin:/usr/bin:/bin", "PYTHONIOENCODING": "utf-8"}
