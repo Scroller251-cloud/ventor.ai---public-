@@ -22,17 +22,12 @@ class _Bucket:
 
 
 class BoundedRateLimiter:
-    """Bounded, thread-safe fixed-window limiter.
-
-    The LRU bound prevents attacker-controlled client identifiers from causing
-    unbounded memory growth. For multi-process deployments this remains a
-    local guard; a shared reverse-proxy limiter should enforce the global cap.
-    """
+    """Bounded, thread-safe fixed-window limiter."""
 
     def __init__(self, limit: int = 120, window: float = 60.0, max_keys: int = 10_000):
         self.limit = max(1, int(limit))
         self.window = max(1.0, float(window))
-        self.max_keys = max(128, int(max_keys))
+        self.max_keys = max(1, int(max_keys))
         self._buckets: OrderedDict[str, _Bucket] = OrderedDict()
         self._lock = Lock()
 
@@ -54,7 +49,6 @@ class BoundedRateLimiter:
                 while len(self._buckets) > self.max_keys:
                     self._buckets.popitem(last=False)
                 return True, 0
-
             bucket.touched = now
             self._buckets.move_to_end(key)
             if bucket.count >= self.limit:
@@ -75,7 +69,7 @@ class Metrics:
         self.errors = 0
         self.total_latency_ms = 0.0
         self.started_at = time.monotonic()
-        self.max_routes = max(128, int(max_routes))
+        self.max_routes = max(1, int(max_routes))
         self.routes: OrderedDict[str, dict[str, float]] = OrderedDict()
 
     def observe(self, route: str, latency_ms: float, error: bool) -> None:
@@ -115,12 +109,7 @@ class Metrics:
 
 
 class AuditLog:
-    """Opt-in JSONL audit sink with serialized writes.
-
-    Request middleware deliberately does not write here: synchronous disk I/O
-    on every request would make observability a latency bottleneck. Callers
-    explicitly record security-sensitive events when needed.
-    """
+    """Opt-in JSONL audit sink with serialized writes."""
 
     def __init__(self):
         self.enabled = os.getenv("VENTOR_AUDIT_LOG", "0").lower() not in {"0", "false", "no"}
@@ -163,14 +152,9 @@ class ProductionMiddleware(BaseHTTPMiddleware):
         client = request.client.host if request.client else "unknown"
         allowed, retry = self.limiter.allow(client)
         if not allowed:
-            response = JSONResponse(
-                {"detail": "Rate limit exceeded", "request_id": request_id},
-                status_code=429,
-                headers={"Retry-After": str(retry)},
-            )
+            response = JSONResponse({"detail": "Rate limit exceeded", "request_id": request_id}, status_code=429, headers={"Retry-After": str(retry)})
             self._headers(response, request_id)
             return response
-
         length = request.headers.get("content-length")
         if length:
             try:
@@ -178,13 +162,9 @@ class ProductionMiddleware(BaseHTTPMiddleware):
             except ValueError:
                 oversized = True
             if oversized:
-                response = JSONResponse(
-                    {"detail": "Request body too large", "request_id": request_id},
-                    status_code=413,
-                )
+                response = JSONResponse({"detail": "Request body too large", "request_id": request_id}, status_code=413)
                 self._headers(response, request_id)
                 return response
-
         error = False
         try:
             response = await call_next(request)
@@ -200,11 +180,7 @@ class ProductionMiddleware(BaseHTTPMiddleware):
 
 class ProductionRuntime:
     def __init__(self):
-        self.limiter = BoundedRateLimiter(
-            int(os.getenv("VENTOR_RATE_LIMIT", "120")),
-            float(os.getenv("VENTOR_RATE_WINDOW", "60")),
-            int(os.getenv("VENTOR_RATE_MAX_KEYS", "10000")),
-        )
+        self.limiter = BoundedRateLimiter(int(os.getenv("VENTOR_RATE_LIMIT", "120")), float(os.getenv("VENTOR_RATE_WINDOW", "60")), int(os.getenv("VENTOR_RATE_MAX_KEYS", "10000")))
         self.metrics = Metrics(int(os.getenv("VENTOR_METRICS_MAX_ROUTES", "5000")))
         self.audit = AuditLog()
 
