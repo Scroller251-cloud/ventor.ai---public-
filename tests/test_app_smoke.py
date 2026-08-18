@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from fastapi.testclient import TestClient
+
 
 def test_application_imports_and_exposes_core_routes(monkeypatch):
     monkeypatch.setenv("VENTOR_PRODUCTION", "0")
@@ -11,6 +13,25 @@ def test_application_imports_and_exposes_core_routes(monkeypatch):
     assert "/api/chat" in paths
     assert "/api/learn" in paths
     assert "/api/browser/open" in paths
+
+
+def test_core_health_endpoints_execute():
+    from backend.app import app
+
+    with TestClient(app) as client:
+        health = client.get("/health")
+        assert health.status_code == 200
+        assert health.json()["status"] == "ok"
+        assert health.headers["X-Content-Type-Options"] == "nosniff"
+        assert health.headers["X-Frame-Options"] == "DENY"
+
+        ready = client.get("/ready")
+        assert ready.status_code == 200
+        assert ready.json()["status"] == "ready"
+
+        metrics = client.get("/metrics")
+        assert metrics.status_code == 200
+        assert "runtime" in metrics.json()
 
 
 def test_security_policy_is_fail_closed():
