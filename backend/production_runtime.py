@@ -37,9 +37,6 @@ class BoundedRateLimiter:
         self._lock = Lock()
 
     def _prune_expired(self, now: float) -> None:
-        # Oldest entries are at the front because active keys are moved to the
-        # end on access. Once the first entry is live, all newer entries are
-        # necessarily live as well.
         while self._buckets:
             key, bucket = next(iter(self._buckets.items()))
             if now - bucket.touched < self.window:
@@ -54,7 +51,6 @@ class BoundedRateLimiter:
             if bucket is None or now - bucket.started >= self.window:
                 self._buckets.pop(key, None)
                 self._buckets[key] = _Bucket(now, 1, now)
-                self._buckets.move_to_end(key)
                 while len(self._buckets) > self.max_keys:
                     self._buckets.popitem(last=False)
                 return True, 0
@@ -69,12 +65,7 @@ class BoundedRateLimiter:
 
     def snapshot(self) -> dict[str, int | float]:
         with self._lock:
-            return {
-                "keys": len(self._buckets),
-                "limit": self.limit,
-                "window_s": self.window,
-                "max_keys": self.max_keys,
-            }
+            return {"keys": len(self._buckets), "limit": self.limit, "window_s": self.window, "max_keys": self.max_keys}
 
 
 class Metrics:
@@ -124,10 +115,15 @@ class Metrics:
 
 
 class AuditLog:
-    """Small process-local JSONL audit sink with serialized writes."""
+    """Opt-in JSONL audit sink with serialized writes.
+
+    Request middleware deliberately does not write here: synchronous disk I/O
+    on every request would make observability a latency bottleneck. Callers
+    explicitly record security-sensitive events when needed.
+    """
 
     def __init__(self):
-        self.enabled = os.getenv("VENTOR_AUDIT_LOG", "1").lower() not in {"0", "false", "no"}
+        self.enabled = os.getenv("VENTOR_AUDIT_LOG", "0").lower() not in {"0", "false", "no"}
         self.path = Path(os.getenv("VENTOR_AUDIT_PATH", "backend/data/audit.jsonl"))
         self._lock = Lock()
 
@@ -142,7 +138,6 @@ class AuditLog:
                 with self.path.open("a", encoding="utf-8") as handle:
                     handle.write(line)
         except OSError:
-            # Observability must never take the API down.
             return
 
 
@@ -194,37 +189,13 @@ class ProductionMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
             error = response.status_code >= 500
+            self._headers(response, request_id)
             return response
         except Exception:
             error = True
             raise
         finally:
             self.metrics.observe(request.url.path, (time.perf_counter() - started) * 1000, error)
-            self.audit.event("request", request_id=request_id, method=request.method, path=request.url.path, error=error)
-
-        # Kept unreachable by the return above; middleware responses are
-        # decorated in the normal return path below in older Starlette builds.
-
-    async def __call__(self, scope, receive, send):
-        # BaseHTTPMiddleware's dispatch handles the response object, but this
-        # wrapper lets us consistently attach security headers without changing
-        # application handlers.
-        async def send_with_headers(message):
-            if message.get("type") == "http.response.start":
-                headers = list(message.get("headers", []))
-                existing = {k.lower() for k, _ in headers}
-                additions = (
-                    (b"x-content-type-options", b"nosniff"),
-                    (b"x-frame-options", b"DENY"),
-                    (b"referrer-policy", b"no-referrer"),
-                    (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
-                )
-                for key, value in additions:
-                    if key not in existing:
-                        headers.append((key, value))
-                message = {**message, "headers": headers}
-            await send(message)
-        await super().__call__(scope, receive, send_with_headers)
 
 
 class ProductionRuntime:
