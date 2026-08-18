@@ -5,7 +5,7 @@ import secrets
 import time
 from threading import Lock
 
-from owner_authorization import Principal
+from .owner_authorization import Principal
 
 SESSION_TTL = 900
 COMMAND_TTL = 120
@@ -41,7 +41,10 @@ def get_session_principal(token: str) -> Principal | None:
 
 
 def verify_session(token: str, scope: str = "owner") -> bool:
-    return get_session_principal(token) is not None
+    principal = get_session_principal(token)
+    if principal is None:
+        return False
+    return scope == "any" or principal.role in {"owner", "user", "device"}
 
 
 def sign_command(principal: Principal, capability: str, args: dict, ttl: int = COMMAND_TTL) -> str:
