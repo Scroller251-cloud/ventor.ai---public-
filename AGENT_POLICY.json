@@ -1,0 +1,11 @@
+{
+  "name": "Ventor Public Agent Policy",
+  "version": "3.0",
+  "core_modification": "never_automatic",
+  "privileged_execution": "owner_or_team_admin_plus_explicit_confirmation",
+  "command_tokens": "short_lived_one_time_principal_bound",
+  "memory": "authenticated_principal_and_session_namespaced",
+  "sandbox": "docker_required_fail_closed",
+  "learning": "two_independent_candidates_and_evidence_gated_verification",
+  "provider_fallback": "bounded_timeout_and_circuit_breaker"
+}
