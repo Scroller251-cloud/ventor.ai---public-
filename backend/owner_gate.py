@@ -6,9 +6,17 @@ from fastapi import Header, HTTPException
 from command_auth import get_session_principal
 
 
-def require_owner(authorization: str | None = Header(default=None)) -> None:
+def _require_session(authorization: str | None) -> None:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Ventor administrative session required")
     principal = get_session_principal(authorization.split(" ", 1)[1].strip())
     if principal is None:
         raise HTTPException(status_code=401, detail="Missing, expired, or invalid Ventor administrative session")
+
+
+def require_owner(authorization: str | None = Header(default=None)) -> None:
+    _require_session(authorization)
+
+
+def require_team_or_owner(authorization: str | None = Header(default=None)) -> None:
+    _require_session(authorization)
