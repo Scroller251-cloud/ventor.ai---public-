@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from threading import Lock
 
 from fastapi import Request
@@ -12,7 +14,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
-@dataclass
+@dataclass(slots=True)
 class _Bucket:
     started: float
     count: int
@@ -20,79 +22,220 @@ class _Bucket:
 
 
 class BoundedRateLimiter:
-    def __init__(self, limit=120, window=60.0, max_keys=10000):
-        self.limit = max(1, int(limit)); self.window = max(1.0, float(window)); self.max_keys = max(128, int(max_keys))
-        self._buckets: OrderedDict[str, _Bucket] = OrderedDict(); self._lock = Lock()
+    """Bounded, thread-safe fixed-window limiter.
+
+    The LRU bound prevents attacker-controlled client identifiers from causing
+    unbounded memory growth. For multi-process deployments this remains a
+    local guard; a shared reverse-proxy limiter should enforce the global cap.
+    """
+
+    def __init__(self, limit: int = 120, window: float = 60.0, max_keys: int = 10_000):
+        self.limit = max(1, int(limit))
+        self.window = max(1.0, float(window))
+        self.max_keys = max(128, int(max_keys))
+        self._buckets: OrderedDict[str, _Bucket] = OrderedDict()
+        self._lock = Lock()
+
+    def _prune_expired(self, now: float) -> None:
+        # Oldest entries are at the front because active keys are moved to the
+        # end on access. Once the first entry is live, all newer entries are
+        # necessarily live as well.
+        while self._buckets:
+            key, bucket = next(iter(self._buckets.items()))
+            if now - bucket.touched < self.window:
+                break
+            self._buckets.pop(key, None)
 
     def allow(self, key: str) -> tuple[bool, int]:
         now = time.monotonic()
         with self._lock:
-            for candidate, bucket in list(self._buckets.items()):
-                if now - bucket.touched >= self.window: self._buckets.pop(candidate, None)
-                else: break
+            self._prune_expired(now)
             bucket = self._buckets.get(key)
             if bucket is None or now - bucket.started >= self.window:
-                if key in self._buckets: self._buckets.pop(key, None)
+                self._buckets.pop(key, None)
                 self._buckets[key] = _Bucket(now, 1, now)
-                while len(self._buckets) > self.max_keys: self._buckets.popitem(last=False)
+                self._buckets.move_to_end(key)
+                while len(self._buckets) > self.max_keys:
+                    self._buckets.popitem(last=False)
                 return True, 0
-            bucket.touched = now; self._buckets.move_to_end(key)
+
+            bucket.touched = now
+            self._buckets.move_to_end(key)
             if bucket.count >= self.limit:
-                return False, max(1, int(self.window - (now - bucket.started)))
+                retry = max(1, int(self.window - (now - bucket.started)))
+                return False, retry
             bucket.count += 1
             return True, 0
 
-    def snapshot(self):
+    def snapshot(self) -> dict[str, int | float]:
         with self._lock:
-            return {"keys": len(self._buckets), "limit": self.limit, "window_s": self.window, "max_keys": self.max_keys}
+            return {
+                "keys": len(self._buckets),
+                "limit": self.limit,
+                "window_s": self.window,
+                "max_keys": self.max_keys,
+            }
 
 
 class Metrics:
-    def __init__(self):
-        self._lock = Lock(); self.requests = 0; self.errors = 0; self.total_latency_ms = 0.0; self.started_at = time.time(); self.routes = {}
+    def __init__(self, max_routes: int = 5_000):
+        self._lock = Lock()
+        self.requests = 0
+        self.errors = 0
+        self.total_latency_ms = 0.0
+        self.started_at = time.monotonic()
+        self.max_routes = max(128, int(max_routes))
+        self.routes: OrderedDict[str, dict[str, float]] = OrderedDict()
 
-    def observe(self, route, latency_ms, error):
+    def observe(self, route: str, latency_ms: float, error: bool) -> None:
         with self._lock:
-            self.requests += 1; self.errors += int(error); self.total_latency_ms += latency_ms
-            item = self.routes.setdefault(route, {"requests": 0, "errors": 0, "latency_ms": 0.0}); item["requests"] += 1; item["errors"] += int(error); item["latency_ms"] += latency_ms
-            if len(self.routes) > 5000: self.routes.pop(next(iter(self.routes)))
+            self.requests += 1
+            self.errors += int(error)
+            self.total_latency_ms += max(0.0, float(latency_ms))
+            item = self.routes.get(route)
+            if item is None:
+                item = {"requests": 0.0, "errors": 0.0, "latency_ms": 0.0}
+                self.routes[route] = item
+            else:
+                self.routes.move_to_end(route)
+            item["requests"] += 1
+            item["errors"] += int(error)
+            item["latency_ms"] += max(0.0, float(latency_ms))
+            while len(self.routes) > self.max_routes:
+                self.routes.popitem(last=False)
 
-    def snapshot(self):
+    def snapshot(self) -> dict:
         with self._lock:
-            return {"uptime_s": round(max(0.0, time.time() - self.started_at), 2), "requests": self.requests, "errors": self.errors,
-                    "avg_latency_ms": round(self.total_latency_ms / self.requests, 2) if self.requests else 0.0,
-                    "routes": {k: {"requests": int(v["requests"]), "errors": int(v["errors"]), "avg_latency_ms": round(v["latency_ms"] / max(1, v["requests"]), 2)} for k, v in self.routes.items()}}
+            requests = self.requests
+            return {
+                "uptime_s": round(max(0.0, time.monotonic() - self.started_at), 2),
+                "requests": requests,
+                "errors": self.errors,
+                "avg_latency_ms": round(self.total_latency_ms / requests, 2) if requests else 0.0,
+                "routes": {
+                    key: {
+                        "requests": int(value["requests"]),
+                        "errors": int(value["errors"]),
+                        "avg_latency_ms": round(value["latency_ms"] / max(1.0, value["requests"]), 2),
+                    }
+                    for key, value in self.routes.items()
+                },
+            }
 
 
 class AuditLog:
-    def __init__(self): self.enabled = os.getenv("VENTOR_AUDIT_LOG", "1").lower() not in {"0", "false", "no"}
-    def event(self, name, **fields): return None
+    """Small process-local JSONL audit sink with serialized writes."""
+
+    def __init__(self):
+        self.enabled = os.getenv("VENTOR_AUDIT_LOG", "1").lower() not in {"0", "false", "no"}
+        self.path = Path(os.getenv("VENTOR_AUDIT_PATH", "backend/data/audit.jsonl"))
+        self._lock = Lock()
+
+    def event(self, name: str, **fields) -> None:
+        if not self.enabled:
+            return
+        record = {"ts": time.time(), "event": str(name), **fields}
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+            with self._lock:
+                with self.path.open("a", encoding="utf-8") as handle:
+                    handle.write(line)
+        except OSError:
+            # Observability must never take the API down.
+            return
 
 
 class ProductionMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, limiter, metrics, audit, max_body_bytes=2_000_000):
-        super().__init__(app); self.limiter = limiter; self.metrics = metrics; self.audit = audit; self.max_body_bytes = max(1024, int(os.getenv("VENTOR_MAX_BODY_BYTES", max_body_bytes)))
+        super().__init__(app)
+        self.limiter = limiter
+        self.metrics = metrics
+        self.audit = audit
+        self.max_body_bytes = max(1024, int(os.getenv("VENTOR_MAX_BODY_BYTES", max_body_bytes)))
+
+    @staticmethod
+    def _headers(response, request_id: str) -> None:
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
 
     async def dispatch(self, request: Request, call_next):
-        request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex; start = time.perf_counter()
-        client = request.client.host if request.client else "unknown"; allowed, retry = self.limiter.allow(client)
+        request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+        started = time.perf_counter()
+        client = request.client.host if request.client else "unknown"
+        allowed, retry = self.limiter.allow(client)
         if not allowed:
-            response = JSONResponse({"detail": "Rate limit exceeded", "request_id": request_id}, status_code=429, headers={"Retry-After": str(retry)})
-            response.headers["X-Request-ID"] = request_id; return response
+            response = JSONResponse(
+                {"detail": "Rate limit exceeded", "request_id": request_id},
+                status_code=429,
+                headers={"Retry-After": str(retry)},
+            )
+            self._headers(response, request_id)
+            return response
+
         length = request.headers.get("content-length")
-        if length and length.isdigit() and int(length) > self.max_body_bytes:
-            response = JSONResponse({"detail": "Request body too large", "request_id": request_id}, status_code=413); response.headers["X-Request-ID"] = request_id; return response
+        if length:
+            try:
+                oversized = int(length) > self.max_body_bytes
+            except ValueError:
+                oversized = True
+            if oversized:
+                response = JSONResponse(
+                    {"detail": "Request body too large", "request_id": request_id},
+                    status_code=413,
+                )
+                self._headers(response, request_id)
+                return response
+
         error = False
         try:
-            response = await call_next(request); error = response.status_code >= 500; return response
+            response = await call_next(request)
+            error = response.status_code >= 500
+            return response
         except Exception:
-            error = True; raise
+            error = True
+            raise
         finally:
-            self.metrics.observe(request.url.path, (time.perf_counter() - start) * 1000, error)
+            self.metrics.observe(request.url.path, (time.perf_counter() - started) * 1000, error)
+            self.audit.event("request", request_id=request_id, method=request.method, path=request.url.path, error=error)
 
-    
+        # Kept unreachable by the return above; middleware responses are
+        # decorated in the normal return path below in older Starlette builds.
+
+    async def __call__(self, scope, receive, send):
+        # BaseHTTPMiddleware's dispatch handles the response object, but this
+        # wrapper lets us consistently attach security headers without changing
+        # application handlers.
+        async def send_with_headers(message):
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers", []))
+                existing = {k.lower() for k, _ in headers}
+                additions = (
+                    (b"x-content-type-options", b"nosniff"),
+                    (b"x-frame-options", b"DENY"),
+                    (b"referrer-policy", b"no-referrer"),
+                    (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+                )
+                for key, value in additions:
+                    if key not in existing:
+                        headers.append((key, value))
+                message = {**message, "headers": headers}
+            await send(message)
+        await super().__call__(scope, receive, send_with_headers)
+
+
 class ProductionRuntime:
     def __init__(self):
-        self.limiter = BoundedRateLimiter(int(os.getenv("VENTOR_RATE_LIMIT", "120")), float(os.getenv("VENTOR_RATE_WINDOW", "60")), int(os.getenv("VENTOR_RATE_MAX_KEYS", "10000")))
-        self.metrics = Metrics(); self.audit = AuditLog()
-    def snapshot(self): return {"metrics": self.metrics.snapshot(), "rate_limiter": self.limiter.snapshot()}
+        self.limiter = BoundedRateLimiter(
+            int(os.getenv("VENTOR_RATE_LIMIT", "120")),
+            float(os.getenv("VENTOR_RATE_WINDOW", "60")),
+            int(os.getenv("VENTOR_RATE_MAX_KEYS", "10000")),
+        )
+        self.metrics = Metrics(int(os.getenv("VENTOR_METRICS_MAX_ROUTES", "5000")))
+        self.audit = AuditLog()
+
+    def snapshot(self):
+        return {"metrics": self.metrics.snapshot(), "rate_limiter": self.limiter.snapshot()}
