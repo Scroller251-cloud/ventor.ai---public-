@@ -54,6 +54,11 @@ def _verify_signed(request: CommandRequest, capability: str, args: dict, authori
         raise HTTPException(403, reason)
 
 
+async def close_resources() -> None:
+    await providers.aclose()
+    memory.close()
+
+
 def install_v3(app):
     @app.get("/api/owner/challenge")
     def owner_challenge():
@@ -101,11 +106,6 @@ def install_v3(app):
     @app.get("/api/capabilities")
     def capabilities():
         return {"capabilities": [{"name": x.name, "risk": x.risk, "description": x.description} for x in CAPABILITIES.values()]}
-
-    @app.get("/api/learning/status")
-    def learning_status(authorization: str | None = Header(default=None)):
-        _principal_from_auth(authorization)
-        return learning.snapshot()
 
     @app.post("/api/command/sign")
     def command_sign(request: CommandRequest, authorization: str | None = Header(default=None)):
