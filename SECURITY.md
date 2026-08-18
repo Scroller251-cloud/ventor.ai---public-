@@ -1,15 +1,34 @@
-# Security Policy
+# Ventor Security Model
 
-Ventor does not store Creator private keys, recovery credentials, API keys, passwords, or production secrets in Git.
+## Authority
 
-## Creator and Co-Creator
+Ventor has four operational classes:
 
-The human-readable Creator identity is `VENTOR-CREATOR-SUJAL-AJAY-KALE`. Authentication is proof-of-possession of a configured cryptographic key. Co-Creators have broad operational authority but cannot replace, revoke, disable, or override the Creator root.
+- **Root owner — Ventor Owner:** complete authority over non-root principals and core configuration.
+- **Team admin — Ventor Team Admin:** operational and core-editing authority except the immutable root owner.
+- **AI agents:** may participate in learning, debate and verification, but cannot administer Ventor, change the authorization roster, become an owner/admin, or self-approve core changes.
+- **Public:** may use explicitly public endpoints, but has no source/core or administrative authority.
 
-## Reporting
+The root identity `VENTOR-OWNER-LOCAL` is cryptographically protected. No API caller, team admin, AI agent, or public user can remove, disable, demote, replace, or transfer it.
 
-Do not disclose suspected vulnerabilities, credentials, private keys, or personal data in public issues. Report security problems privately to the maintainers with reproduction details and impact.
+## Authentication
 
-## Secrets
+Privileged identities authenticate using Ed25519 challenge/response. Long-lived private keys are never sent to Ventor. Sessions are short-lived and command tokens are one-time and principal-bound.
 
-Runtime authorization rosters and private credentials must be supplied through secure deployment storage or environment/secret-management facilities. Source-code changes alone must never grant administrative access.
+Runtime credentials are local-only and ignored by Git. Public templates contain placeholders only.
+
+## Public access
+
+Public chat/model/health endpoints do not imply administrative permission. Every privileged operation performs a server-side role check.
+
+## AI learning
+
+External models are mentors/candidates, not administrators. Their outputs are independently debated and verified before becoming persistent lessons. Lessons do not automatically modify Ventor core code.
+
+## Execution boundary
+
+Arbitrary generated code is deny-by-default. Host execution is not used as a fallback for sandbox failures.
+
+## Repository vs runtime
+
+The public Git repository is a sanitized release surface. Runtime authorization is separately enforced by the backend. `CODEOWNERS` provides repository review controls; it is not a substitute for backend authorization.

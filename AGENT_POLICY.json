@@ -1,0 +1,29 @@
+{
+  "version": "3.0",
+  "agents": ["qwen", "gemma", "codex", "gemini", "claude", "grok", "perplexity", "nvidia"],
+  "credential_policy": "official_auth_only",
+  "no_credential_scraping": true,
+  "no_bypass": true,
+  "owner_gate": "external_immutable",
+  "auto_upgrade": false,
+  "evidence_required": true,
+  "insufficient_evidence_is_valid_outcome": true,
+  "generated_code_policy": {
+    "default": "deny",
+    "hostile_code": "never_execute_on_host",
+    "safe_subset": "restricted_ast_only",
+    "os_sandbox_required_for_arbitrary_code": true
+  },
+  "authority_model": {
+    "root_owner": {"principal_id": "VENTOR-OWNER-LOCAL", "immutable": true, "can_edit_core": true, "can_manage_all_non_root_principals": true},
+    "team_admin": {"principal_id": "VENTOR-TEAM-ADMIN-LOCAL", "can_edit_core": true, "can_manage_users_and_ai_agents": true, "cannot_modify_root": true},
+    "ai_agent": {"can_learn": true, "can_debate": true, "can_verify": true, "can_edit_core": false, "can_modify_authorization": false},
+    "public": {"can_use_public_features": true, "can_edit_source": false, "can_access_admin": false}
+  },
+  "ai_agent_policy": {
+    "cannot_become_owner": true,
+    "cannot_become_team_admin": true,
+    "cannot_modify_roster": true,
+    "cannot_self_approve_core_changes": true
+  }
+}
