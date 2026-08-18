@@ -8,10 +8,9 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
+from typing import Any, Awaitable, Callable
 
-from fastapi import Request
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
 
 
 @dataclass(slots=True)
@@ -22,7 +21,7 @@ class _Bucket:
 
 
 class BoundedRateLimiter:
-    """Bounded, thread-safe fixed-window limiter."""
+    """Bounded, thread-safe fixed-window limiter with LRU eviction."""
 
     def __init__(self, limit: int = 120, window: float = 60.0, max_keys: int = 10_000):
         self.limit = max(1, int(limit))
@@ -59,10 +58,17 @@ class BoundedRateLimiter:
 
     def snapshot(self) -> dict[str, int | float]:
         with self._lock:
-            return {"keys": len(self._buckets), "limit": self.limit, "window_s": self.window, "max_keys": self.max_keys}
+            return {
+                "keys": len(self._buckets),
+                "limit": self.limit,
+                "window_s": self.window,
+                "max_keys": self.max_keys,
+            }
 
 
 class Metrics:
+    """Low-cardinality, bounded in-process metrics."""
+
     def __init__(self, max_routes: int = 5_000):
         self._lock = Lock()
         self.requests = 0
@@ -89,7 +95,7 @@ class Metrics:
             while len(self.routes) > self.max_routes:
                 self.routes.popitem(last=False)
 
-    def snapshot(self) -> dict:
+    def snapshot(self) -> dict[str, Any]:
         with self._lock:
             requests = self.requests
             return {
@@ -116,7 +122,7 @@ class AuditLog:
         self.path = Path(os.getenv("VENTOR_AUDIT_PATH", "backend/data/audit.jsonl"))
         self._lock = Lock()
 
-    def event(self, name: str, **fields) -> None:
+    def event(self, name: str, **fields: Any) -> None:
         if not self.enabled:
             return
         record = {"ts": time.time(), "event": str(name), **fields}
@@ -130,59 +136,97 @@ class AuditLog:
             return
 
 
-class ProductionMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, limiter, metrics, audit, max_body_bytes=2_000_000):
-        super().__init__(app)
+class ProductionMiddleware:
+    """Pure ASGI middleware to avoid BaseHTTPMiddleware request/response overhead."""
+
+    def __init__(self, app: Callable[..., Awaitable[Any]], limiter: BoundedRateLimiter,
+                 metrics: Metrics, audit: AuditLog, max_body_bytes: int = 2_000_000):
+        self.app = app
         self.limiter = limiter
         self.metrics = metrics
         self.audit = audit
-        self.max_body_bytes = max(1024, int(os.getenv("VENTOR_MAX_BODY_BYTES", max_body_bytes)))
+        configured = os.getenv("VENTOR_MAX_BODY_BYTES")
+        self.max_body_bytes = max(1024, int(configured)) if configured else max(1024, int(max_body_bytes))
 
     @staticmethod
-    def _headers(response, request_id: str) -> None:
-        response.headers["X-Request-ID"] = request_id
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    def _headers(headers: list[tuple[bytes, bytes]], request_id: str) -> list[tuple[bytes, bytes]]:
+        # Avoid duplicate security/request headers if an upstream middleware already supplied them.
+        existing = {key.lower() for key, _ in headers}
+        additions = [
+            (b"x-request-id", request_id.encode("ascii")),
+            (b"x-content-type-options", b"nosniff"),
+            (b"x-frame-options", b"DENY"),
+            (b"referrer-policy", b"no-referrer"),
+            (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+        ]
+        return headers + [(key, value) for key, value in additions if key not in existing]
 
-    async def dispatch(self, request: Request, call_next):
-        request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    async def __call__(self, scope: dict[str, Any], receive: Callable, send: Callable) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        request_id_raw = headers.get(b"x-request-id")
+        request_id = request_id_raw.decode("ascii", "ignore")[:128] if request_id_raw else uuid.uuid4().hex
         started = time.perf_counter()
-        client = request.client.host if request.client else "unknown"
-        allowed, retry = self.limiter.allow(client)
+        client = scope.get("client")
+        client_host = client[0] if client else "unknown"
+
+        allowed, retry = self.limiter.allow(client_host)
         if not allowed:
-            response = JSONResponse({"detail": "Rate limit exceeded", "request_id": request_id}, status_code=429, headers={"Retry-After": str(retry)})
-            self._headers(response, request_id)
-            return response
-        length = request.headers.get("content-length")
+            response = JSONResponse(
+                {"detail": "Rate limit exceeded", "request_id": request_id},
+                status_code=429,
+                headers={"Retry-After": str(retry)},
+            )
+            await response(scope, receive, send)
+            return
+
+        length = headers.get(b"content-length")
         if length:
             try:
                 oversized = int(length) > self.max_body_bytes
-            except ValueError:
+            except (TypeError, ValueError):
                 oversized = True
             if oversized:
-                response = JSONResponse({"detail": "Request body too large", "request_id": request_id}, status_code=413)
-                self._headers(response, request_id)
-                return response
+                response = JSONResponse(
+                    {"detail": "Request body too large", "request_id": request_id},
+                    status_code=413,
+                )
+                await response(scope, receive, send)
+                return
+
+        status_code = 500
+
+        async def send_wrapper(message: dict[str, Any]) -> None:
+            nonlocal status_code
+            if message.get("type") == "http.response.start":
+                status_code = int(message.get("status", 500))
+                message = dict(message)
+                message["headers"] = self._headers(list(message.get("headers", [])), request_id)
+            await send(message)
+
         error = False
         try:
-            response = await call_next(request)
-            error = response.status_code >= 500
-            self._headers(response, request_id)
-            return response
+            await self.app(scope, receive, send_wrapper)
         except Exception:
             error = True
             raise
         finally:
-            self.metrics.observe(request.url.path, (time.perf_counter() - started) * 1000, error)
+            error = error or status_code >= 500
+            self.metrics.observe(scope.get("path", ""), (time.perf_counter() - started) * 1000, error)
 
 
 class ProductionRuntime:
     def __init__(self):
-        self.limiter = BoundedRateLimiter(int(os.getenv("VENTOR_RATE_LIMIT", "120")), float(os.getenv("VENTOR_RATE_WINDOW", "60")), int(os.getenv("VENTOR_RATE_MAX_KEYS", "10000")))
+        self.limiter = BoundedRateLimiter(
+            int(os.getenv("VENTOR_RATE_LIMIT", "120")),
+            float(os.getenv("VENTOR_RATE_WINDOW", "60")),
+            int(os.getenv("VENTOR_RATE_MAX_KEYS", "10000")),
+        )
         self.metrics = Metrics(int(os.getenv("VENTOR_METRICS_MAX_ROUTES", "5000")))
         self.audit = AuditLog()
 
-    def snapshot(self):
+    def snapshot(self) -> dict[str, Any]:
         return {"metrics": self.metrics.snapshot(), "rate_limiter": self.limiter.snapshot()}
