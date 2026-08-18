@@ -1,0 +1,10 @@
+fastapi==0.140.7
+uvicorn==0.51.0
+pydantic==2.13.4
+httpx==0.28.1
+python-dotenv==1.2.2
+cryptography==49.0.0
+argon2-cffi==25.1.0
+pytest==8.4.2
+playwright==1.60.0
+psutil==6.1.0
