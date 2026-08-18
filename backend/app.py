@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 _BACKEND_DIR = Path(__file__).resolve().parent
@@ -28,16 +29,40 @@ from .stress_tests import run as run_stress_tests
 from .learning_loop import LearningLoop
 from .learning_engine import VerifiedLearningEngine
 from .mentor_learning import MentorLearningPipeline
-from .coding_tests import run_python_test, security_check
+from .coding_tests import security_check
 from .production_runtime import ProductionMiddleware, ProductionRuntime
 from .model_manager import ModelManager
+from .provider_router import ProviderRouter
 
 APP_VERSION = "3.0.0"
 runtime = ProductionRuntime()
 model_manager = ModelManager()
-app = FastAPI(title="Ventor.ai — Production Multi-Agent AI", version=APP_VERSION,
-              docs_url="/docs" if os.getenv("VENTOR_DISABLE_DOCS", "0") != "1" else None,
-              redoc_url="/redoc" if os.getenv("VENTOR_DISABLE_DOCS", "0") != "1" else None)
+qwen = QwenMentor()
+gemma = GemmaMentor()
+learning = VerifiedLearningEngine()
+debate = DebateEngine(qwen, gemma, learning)
+verifier = CriticVerifier([qwen, gemma])
+router = UnifiedRouter(qwen, gemma)
+learner = LearningLoop()
+mentor_learning = MentorLearningPipeline([qwen, gemma], debate, verifier, learning)
+_provider = ProviderRouter()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    yield
+    await qwen.aclose()
+    await gemma.aclose()
+    await _provider.aclose()
+
+
+app = FastAPI(
+    title="Ventor.ai — Production Multi-Agent AI",
+    version=APP_VERSION,
+    lifespan=lifespan,
+    docs_url="/docs" if os.getenv("VENTOR_DISABLE_DOCS", "0") != "1" else None,
+    redoc_url="/redoc" if os.getenv("VENTOR_DISABLE_DOCS", "0") != "1" else None,
+)
 app.add_middleware(ProductionMiddleware, limiter=runtime.limiter, metrics=runtime.metrics, audit=runtime.audit)
 
 cors = [x.strip() for x in os.getenv("VENTOR_CORS_ORIGINS", "").split(",") if x.strip()]
@@ -48,11 +73,6 @@ if cors:
 trusted_hosts = [x.strip() for x in os.getenv("VENTOR_TRUSTED_HOSTS", "").split(",") if x.strip()]
 if trusted_hosts:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
-
-qwen = QwenMentor(); gemma = GemmaMentor(); learning = VerifiedLearningEngine()
-debate = DebateEngine(qwen, gemma, learning); verifier = CriticVerifier([qwen, gemma])
-router = UnifiedRouter(qwen, gemma); learner = LearningLoop()
-mentor_learning = MentorLearningPipeline([qwen, gemma], debate, verifier, learning)
 
 
 class Task(BaseModel):
@@ -94,8 +114,10 @@ async def route(t: Task):
 @app.post("/api/verify", dependencies=[Depends(require_team_or_owner)])
 async def verify(t: Task):
     results = await router.run(t.prompt, t.agents or router.select_specialists(t.prompt))
+
     class C:
         def __init__(self, mentor, answer): self.mentor = mentor; self.answer = answer
+
     candidates = [C(r.agent, r.answer) for r in results if r.answer]
     verdict = await verifier.verify(t.prompt, candidates)
     evidence = [{"agent": r.agent, "check": (await check_urls(r.answer)).__dict__} for r in results if r.answer]
