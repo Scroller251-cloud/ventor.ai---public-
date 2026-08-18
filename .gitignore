@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+backend/.env
+backend/data/
+backend/workspace/
+secrets/
+models/
+release/
+*.log
+*.db
+*.sqlite*
+models_installed.flag
+ventor_port.txt
