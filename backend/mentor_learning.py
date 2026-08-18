@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
-from critic_verifier import CriticVerifier, extract_lesson_from_answer
-from debate_engine import Candidate, DebateEngine
-from learning_engine import MentorObservation, VerifiedLearningEngine
+from .critic_verifier import CriticVerifier, extract_lesson_from_answer
+from .debate_engine import Candidate, DebateEngine
+from .learning_engine import MentorObservation, VerifiedLearningEngine
 
 
 class MentorLearningPipeline:
