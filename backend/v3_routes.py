@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 from fastapi import Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from browser_controller import BrowserPolicyError, open_page
-from capability_broker import CAPABILITIES, authorize as authorize_capability
-from command_auth import get_session_principal, issue_session, sign_command, verify_command
-from computer_sandbox import ComputerSandbox, SandboxExecutionDenied
-from learning_engine import VerifiedLearningEngine
-from memory_store import MemoryStore
-from owner_authorization import AuthorizationError, Principal, authorize, load_runtime_roster, new_challenge
-from provider_router import ProviderRouter
-from realtime import needs_realtime, now_info, web_search
-from research_engine import research
+from .browser_controller import BrowserPolicyError, open_page
+from .capability_broker import CAPABILITIES, authorize as authorize_capability
+from .command_auth import get_session_principal, issue_session, sign_command, verify_command
+from .computer_sandbox import ComputerSandbox, SandboxExecutionDenied
+from .learning_engine import VerifiedLearningEngine
+from .memory_store import MemoryStore
+from .owner_authorization import AuthorizationError, Principal, authorize, load_runtime_roster, new_challenge
+from .provider_router import ProviderRouter
+from .realtime import needs_realtime, now_info, web_search
+from .research_engine import research
 
 memory = MemoryStore()
 learning = VerifiedLearningEngine()
@@ -21,20 +21,20 @@ sandbox = ComputerSandbox()
 
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = Field(min_length=1, max_length=20_000)
     provider: str | None = None
-    session: str = "default"
+    session: str = Field(default="default", min_length=1, max_length=128)
 
 
 class LoginRequest(BaseModel):
-    challenge: str
+    challenge: str = Field(min_length=1, max_length=256)
     claims: dict
-    signature: str
+    signature: str = Field(min_length=1, max_length=4096)
 
 
 class CommandRequest(BaseModel):
-    capability: str
-    args: dict = {}
+    capability: str = Field(min_length=1, max_length=128)
+    args: dict = Field(default_factory=dict)
     confirmed: bool = False
 
 
