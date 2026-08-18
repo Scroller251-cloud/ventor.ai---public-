@@ -105,11 +105,6 @@ def install_v3(app, *, memory=None, learning=None, providers=None, sandbox=None)
     def capabilities():
         return {"capabilities": [{"name": x.name, "risk": x.risk, "description": x.description} for x in CAPABILITIES.values()]}
 
-    @app.get("/api/learning/status")
-    def learning_status(authorization: str | None = Header(default=None)):
-        _principal_from_auth(authorization)
-        return learning.snapshot()
-
     @app.post("/api/command/sign")
     def command_sign(r: CommandRequest, authorization: str | None = Header(default=None)):
         principal = _principal_from_auth(authorization)
