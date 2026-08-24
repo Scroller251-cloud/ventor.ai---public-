@@ -30,6 +30,20 @@ def test_agreeing_candidates_can_be_verified():
     asyncio.run(run())
 
 
+def test_common_morphology_does_not_break_agreement():
+    async def run():
+        result = await CriticVerifier().verify(
+            "permissions",
+            [
+                candidate("qwen", "Validate capability permissions before execution."),
+                candidate("gemma", "Validate capability permissions before executing actions."),
+            ],
+        )
+        assert result.status == "verified"
+        assert result.selected_mentor in {"qwen", "gemma"}
+    asyncio.run(run())
+
+
 def test_conflicting_numeric_claims_require_review():
     async def run():
         answers = ['{"claims":["The timeout should be 10 seconds."],"confidence":0.9}', '{"claims":["The timeout should be 30 seconds."],"confidence":0.9}']
