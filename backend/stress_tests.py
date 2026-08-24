@@ -21,6 +21,10 @@ async def run() -> list[dict]:
 
     root = Path(__file__).resolve().parent
     project = root.parent
+    backend_dir = str(root)
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+
     check("backend imports", lambda: __import__("app") is not None)
     registry = __import__("agent_registry")
     check("agent registry", lambda: len(registry.public_registry()) >= 2 and all(item.get("model") for item in registry.public_registry()))
