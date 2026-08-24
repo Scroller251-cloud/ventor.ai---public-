@@ -21,12 +21,28 @@ class FinalVerdict:
 
 
 _STOPWORDS = {"a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "on", "or", "that", "the", "their", "this", "to", "use", "with", "you", "your", "before", "after", "than", "then", "when", "while"}
-_SYNONYMS = {"check": "validate", "checking": "validate", "checked": "validate", "verifies": "validate", "verify": "validate", "verified": "validate", "validating": "validate", "validation": "validate", "doing": "perform", "performed": "perform", "expensive": "costly"}
+_SYNONYMS = {"check": "validate", "checking": "validate", "checked": "validate", "verifies": "validate", "verify": "validate", "verified": "validate", "validating": "validate", "validation": "validate", "doing": "perform", "performed": "perform", "performing": "perform", "expensive": "costly", "executing": "execute", "executed": "execute", "execution": "execute", "actions": "action", "permissions": "permission"}
 _NEGATION = {"not", "never", "no", "without", "avoid", "cannot", "can't", "dont", "don't"}
 
 
 def _tokens(text: str) -> set[str]:
-    return {_SYNONYMS.get(t, t) for t in re.findall(r"[a-z0-9][a-z0-9'_-]*", text.lower()) if t not in _STOPWORDS and len(t) > 2}
+    tokens = set()
+    for token in re.findall(r"[a-z0-9][a-z0-9'_-]*", text.lower()):
+        if token in _STOPWORDS or len(token) <= 2:
+            continue
+        token = _SYNONYMS.get(token, token)
+        # Small deterministic normalization for common inflections. This is
+        # deliberately conservative; it must not become a semantic paraphrase engine.
+        if token.endswith("ies") and len(token) > 4:
+            token = token[:-3] + "y"
+        elif token.endswith("ing") and len(token) > 5:
+            token = token[:-3]
+        elif token.endswith("ed") and len(token) > 4:
+            token = token[:-2]
+        elif token.endswith("s") and len(token) > 4:
+            token = token[:-1]
+        tokens.add(token)
+    return tokens
 
 
 def _similarity(a: str, b: str) -> float:
