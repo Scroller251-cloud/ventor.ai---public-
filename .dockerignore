@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.log
+backend/.env
+backend/data
+backend/workspace
+secrets
+models
+models_installed.flag
+ventor_port.txt

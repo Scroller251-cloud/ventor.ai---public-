@@ -1,0 +1,12 @@
+* @Scroller251-cloud
+/backend/security_runner.py @Scroller251-cloud
+/backend/owner_authorization.py @Scroller251-cloud
+/backend/command_auth.py @Scroller251-cloud
+/backend/computer_sandbox.py @Scroller251-cloud
+/backend/memory_store.py @Scroller251-cloud
+/backend/learning_engine.py @Scroller251-cloud
+/backend/provider_router.py @Scroller251-cloud
+/.github/ @Scroller251-cloud
+/Dockerfile @Scroller251-cloud
+/docker-compose.yml @Scroller251-cloud
+/requirements.txt @Scroller251-cloud
